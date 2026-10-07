@@ -202,7 +202,7 @@
 			<p class="issue-body readme-status" th:if="${#strings.isEmpty(issue.bodyHtml)}">No description provided.</p>
 		</article>
 		<p class="readme-status" th:unless="${issue}">
-			<th:block th:text="${issueError ?: 'No open good first issue found right now.'}">No issue.</th:block>
+			<th:block th:text="${issueError ?: 'No open good first issue in English found right now.'}">No issue.</th:block>
 			<a th:href="${githubUrl + '/issues'}" target="_blank" rel="noopener">Browse issues on GitHub ↗</a>
 		</p>
 	</th:block>

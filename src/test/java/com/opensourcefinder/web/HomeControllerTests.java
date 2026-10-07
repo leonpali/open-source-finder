@@ -348,7 +348,7 @@ class HomeControllerTests {
 
 			mvc.perform(get("/repos/pallets/flask/issue"))
 					.andExpect(status().isOk())
-					.andExpect(content().string(containsString("No open good first issue found")))
+					.andExpect(content().string(containsString("No open good first issue in English found")))
 					.andExpect(content().string(containsString("href=\"https://github.com/pallets/flask/issues\"")));
 		}
 

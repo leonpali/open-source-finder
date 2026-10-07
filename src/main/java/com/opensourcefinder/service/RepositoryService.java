@@ -84,12 +84,14 @@ public class RepositoryService {
 		return repositories.get(key(owner, name), k -> github.getRepository(owner, name).map(RepositoryService::toRepository));
 	}
 
-	/** The newest open good first issue, preferring ones nobody is assigned to. */
+	/** The newest open good first issue written in English, preferring ones nobody is assigned to. */
 	public Optional<Issue> findGoodFirstIssue(Repository repo) {
 		return issues.get(key(repo.owner(), repo.name()), k -> {
 			List<GitHubIssue> candidates = github.openIssuesWithLabel(repo.owner(), repo.name(), GOOD_FIRST_ISSUE, 20)
 					.stream()
 					.filter(issue -> !issue.isPullRequest())
+					.filter(issue -> EnglishText.isLikelyEnglish(issue.title())
+							&& EnglishText.isLikelyEnglishHtml(issue.bodyHtml()))
 					.toList();
 			return candidates.stream()
 					.filter(issue -> !issue.isAssigned())
@@ -116,6 +118,8 @@ public class RepositoryService {
 	private List<Repository> search(String query) {
 		return searches.get(query, q -> {
 			List<Repository> found = github.searchRepositories(q, pageSize).stream()
+					// The search can't filter by human language, so drop repos described in another language.
+					.filter(repo -> EnglishText.isLikelyEnglish(repo.description()))
 					.map(RepositoryService::toRepository)
 					.toList();
 			// Lets the detail view open without another request.

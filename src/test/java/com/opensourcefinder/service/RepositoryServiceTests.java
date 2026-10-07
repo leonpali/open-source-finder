@@ -168,6 +168,48 @@ class RepositoryServiceTests {
 	}
 
 	@Test
+	void skipsIssuesNotWrittenInEnglish() {
+		Repository flask = RepositoryService.toRepository(repo("pallets", "flask", 70000, "Python"));
+		given(github.openIssuesWithLabel("pallets", "flask", "good first issue", 20)).willReturn(List.of(
+				issue(9, "修复登录页面的显示问题", "<p>English body</p>"),
+				issue(8, "Fix login page layout", "<p>登录页面在移动端显示错位，请修复。</p>"),
+				issue(7, "Fix login page layout", "<p>The login page is misaligned on mobile.</p>")));
+
+		assertThat(service.findGoodFirstIssue(flask)).get().extracting(Issue::number).isEqualTo(7);
+	}
+
+	@Test
+	void returnsEmptyWhenNoIssueIsInEnglish() {
+		Repository flask = RepositoryService.toRepository(repo("pallets", "flask", 70000, "Python"));
+		given(github.openIssuesWithLabel("pallets", "flask", "good first issue", 20))
+				.willReturn(List.of(issue(9, "修复登录页面的显示问题", "<p>请修复。</p>")));
+
+		assertThat(service.findGoodFirstIssue(flask)).isEmpty();
+	}
+
+	@Test
+	void dropsRepositoriesDescribedInAnotherLanguage() {
+		given(github.searchRepositories(BASE, 30)).willReturn(List.of(
+				repo("pallets", "flask", 70000, "Python"),
+				new GitHubRepository("vue-admin", new GitHubRepository.Owner("someone"), "一个基于 Vue 的后台管理系统模板",
+						"https://github.com/someone/vue-admin", 60000, "Vue", List.of()),
+				new GitHubRepository("no-description", new GitHubRepository.Owner("someone"), null,
+						"https://github.com/someone/no-description", 50000, "Go", List.of())));
+
+		assertThat(service.findPopular(List.of())).extracting(Repository::name)
+				.containsExactly("flask", "no-description");
+	}
+
+	@Test
+	void stillFindsNonEnglishRepositoryByName() {
+		given(github.getRepository("someone", "vue-admin")).willReturn(Optional.of(new GitHubRepository("vue-admin",
+				new GitHubRepository.Owner("someone"), "一个基于 Vue 的后台管理系统模板", "https://github.com/someone/vue-admin",
+				60000, "Vue", List.of())));
+
+		assertThat(service.find("someone", "vue-admin")).isPresent();
+	}
+
+	@Test
 	void fallsBackToAssignedIssue() {
 		Repository flask = RepositoryService.toRepository(repo("pallets", "flask", 70000, "Python"));
 		given(github.openIssuesWithLabel("pallets", "flask", "good first issue", 20))
@@ -188,6 +230,11 @@ class RepositoryServiceTests {
 	static GitHubRepository repo(String owner, String name, int stars, String language) {
 		return new GitHubRepository(name, new GitHubRepository.Owner(owner), name + " description",
 				"https://github.com/" + owner + "/" + name, stars, language, List.of());
+	}
+
+	static GitHubIssue issue(int number, String title, String bodyHtml) {
+		return new GitHubIssue(number, title, bodyHtml, "https://github.com/pallets/flask/issues/" + number,
+				List.of(new GitHubIssue.Label("good first issue")), 0, new GitHubIssue.User("octocat"), List.of(), null);
 	}
 
 	static GitHubIssue issue(int number, boolean pullRequest, boolean assigned) {
