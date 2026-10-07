@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.opensourcefinder.model.Repository;
+import com.opensourcefinder.service.TechnologyCatalog;
 
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -18,7 +19,7 @@ public record FilterState(List<String> selected) {
 	}
 
 	public boolean isSelected(String tech) {
-		return selected.stream().anyMatch(tech::equalsIgnoreCase);
+		return selected.stream().anyMatch(s -> TechnologyCatalog.same(s, tech));
 	}
 
 	/** The page URL for the current filter. */
@@ -29,7 +30,7 @@ public record FilterState(List<String> selected) {
 	/** The page URL with {@code tech} added, or removed if it is already selected. */
 	public String toggleUrl(String tech) {
 		var next = new ArrayList<>(selected);
-		if (!next.removeIf(tech::equalsIgnoreCase)) {
+		if (!next.removeIf(s -> TechnologyCatalog.same(s, tech))) {
 			next.add(tech);
 		}
 		return url(next, null);

@@ -390,18 +390,25 @@ h1, h2, h3, h4 { margin: 0; line-height: 1.25; }
 	font-size: 14px;
 	word-wrap: break-word;
 }
-.readme > :first-child { margin-top: 0; }
-.readme img { max-width: 100%; height: auto; }
-.readme pre {
+.readme > :first-child,
+.markdown > :first-child { margin-top: 0; }
+.readme img,
+.markdown img { max-width: 100%; height: auto; }
+.readme pre,
+.markdown pre {
 	overflow-x: auto;
 	padding: 12px;
 	border-radius: 8px;
 	background: var(--surface-muted);
 }
-.readme code { font-family: var(--mono); font-size: 0.9em; }
-.readme a { color: var(--accent); }
-.readme table { border-collapse: collapse; display: block; overflow-x: auto; }
-.readme th, .readme td { border: 1px solid var(--border); padding: 4px 10px; }
+.readme code,
+.markdown code { font-family: var(--mono); font-size: 0.9em; }
+.readme a,
+.markdown a { color: var(--accent); }
+.readme table,
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
+.readme th, .readme td,
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 10px; }
 .readme h1, .readme h2 { padding-bottom: 6px; border-bottom: 1px solid var(--border); margin: 18px 0 10px; }
 .readme-status { margin: 0; color: var(--text-muted); }
 
@@ -415,7 +422,30 @@ h1, h2, h3, h4 { margin: 0; line-height: 1.25; }
 }
 .issue-title { font-size: 16px; }
 .issue .tag-row { margin-top: 6px; }
-.issue-body { margin: 12px 0 0; white-space: pre-wrap; color: var(--text); }
+.issue-body { margin: 12px 0 0; color: var(--text); font-size: 14px; }
+.issue-body.markdown {
+	max-height: 320px;
+	overflow-y: auto;
+	padding-top: 12px;
+	border-top: 1px solid var(--border);
+	word-wrap: break-word;
+}
+.issue-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.issue-number { color: var(--text-muted); font-weight: 400; }
+.issue-meta { margin: 6px 0 0; font-size: 13px; color: var(--text-muted); }
+
+.error-banner {
+	margin-bottom: 14px;
+	padding: 12px 16px;
+	border: 1px solid #f0b4b4;
+	border-radius: var(--radius);
+	background: #fdf0f0;
+	color: #8a1f1f;
+	font-size: 14px;
+}
+@media (prefers-color-scheme: dark) {
+	.error-banner { border-color: #6e2a2a; background: #2d1414; color: #f4b4b4; }
+}
 
 /* ---------- Responsive ---------- */
 

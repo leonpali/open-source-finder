@@ -3,9 +3,11 @@ package com.opensourcefinder.web;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.opensourcefinder.github.GitHubException;
 import com.opensourcefinder.model.Repository;
 import com.opensourcefinder.service.ReadmeService;
 import com.opensourcefinder.service.RepositoryService;
+import com.opensourcefinder.service.TechnologyCatalog;
 import jakarta.servlet.http.HttpServletResponse;
 
 import org.springframework.http.HttpStatus;
@@ -47,7 +49,7 @@ public class HomeController {
 
 		var selected = new ArrayList<>(tech);
 		if (q != null && !q.isBlank()) {
-			selected.add(repositories.resolveTechnology(q));
+			selected.add(TechnologyCatalog.resolve(q));
 		}
 		var filter = filter(selected);
 
@@ -59,15 +61,26 @@ public class HomeController {
 			response.setHeader("HX-Push-Url", filter.url());
 		}
 
-		List<Repository> matches = repositories.findByTechnologies(filter.selected());
+		List<Repository> matches;
+		try {
+			matches = repositories.findPopular(filter.selected());
+		}
+		catch (GitHubException ex) {
+			matches = List.of();
+			model.addAttribute("error", ex.getMessage());
+		}
 		model.addAttribute("filter", filter);
 		model.addAttribute("repositories", matches);
-		model.addAttribute("totalCount", repositories.findAll().size());
-		model.addAttribute("technologyOptions", repositories.availableTechnologies());
+		model.addAttribute("technologyOptions", TechnologyCatalog.names());
 
 		if (repo != null && repo.contains("/")) {
 			String[] parts = repo.split("/", 2);
-			repositories.find(parts[0], parts[1]).ifPresent(r -> model.addAttribute("selectedRepo", r));
+			try {
+				repositories.find(parts[0], parts[1]).ifPresent(r -> model.addAttribute("selectedRepo", r));
+			}
+			catch (GitHubException ex) {
+				// The list still renders; the dialog just stays closed.
+			}
 		}
 		return "index";
 	}
@@ -77,34 +90,62 @@ public class HomeController {
 	public String technologies(@RequestParam(name = "tech", defaultValue = "") List<String> tech,
 			@RequestParam(defaultValue = "") String q, Model model) {
 		model.addAttribute("filter", filter(tech));
-		model.addAttribute("technologyOptions", repositories.searchTechnologies(q));
+		model.addAttribute("technologyOptions", TechnologyCatalog.search(q));
 		model.addAttribute("query", q.strip());
 		return "index :: techState";
 	}
 
-	/** Contents of the detail dialog. The README is loaded separately so the dialog opens immediately. */
+	/** Contents of the detail dialog. README and issue load separately so the dialog opens immediately. */
 	@GetMapping("/repos/{owner}/{name}")
 	public String detail(@PathVariable String owner, @PathVariable String name,
 			@RequestParam(name = "tech", defaultValue = "") List<String> tech, Model model) {
 		model.addAttribute("filter", filter(tech));
-		model.addAttribute("selectedRepo", findOr404(owner, name));
+		try {
+			Repository repo = repositories.find(owner, name)
+					.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown repository"));
+			model.addAttribute("selectedRepo", repo);
+		}
+		catch (GitHubException ex) {
+			model.addAttribute("detailError", ex.getMessage());
+			model.addAttribute("detailRepo", owner + "/" + name);
+		}
 		return "index :: detail";
 	}
 
+	// The README and issue fragments always render (never an error status), because htmx doesn't swap error
+	// responses and the dialog would be stuck on "Loading…".
+
 	@GetMapping("/repos/{owner}/{name}/readme")
 	public String readme(@PathVariable String owner, @PathVariable String name, Model model) {
-		Repository repo = findOr404(owner, name);
-		model.addAttribute("selectedRepo", repo);
-		readmes.findReadmeHtml(repo).ifPresent(html -> model.addAttribute("readmeHtml", html));
+		model.addAttribute("githubUrl", githubUrl(owner, name));
+		try {
+			repositories.find(owner, name).flatMap(readmes::findReadmeHtml)
+					.ifPresent(html -> model.addAttribute("readmeHtml", html));
+		}
+		catch (GitHubException ex) {
+			// Falls back to the link to GitHub.
+		}
 		return "index :: readme";
 	}
 
-	private FilterState filter(List<String> technologies) {
-		return new FilterState(repositories.normalizeTechnologies(technologies));
+	@GetMapping("/repos/{owner}/{name}/issue")
+	public String issue(@PathVariable String owner, @PathVariable String name, Model model) {
+		model.addAttribute("githubUrl", githubUrl(owner, name));
+		try {
+			repositories.find(owner, name).flatMap(repositories::findGoodFirstIssue)
+					.ifPresent(issue -> model.addAttribute("issue", issue));
+		}
+		catch (GitHubException ex) {
+			model.addAttribute("issueError", ex.getMessage());
+		}
+		return "index :: issue";
 	}
 
-	private Repository findOr404(String owner, String name) {
-		return repositories.find(owner, name)
-				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown repository"));
+	private static FilterState filter(List<String> technologies) {
+		return new FilterState(TechnologyCatalog.normalize(technologies));
+	}
+
+	private static String githubUrl(String owner, String name) {
+		return "https://github.com/" + owner + "/" + name;
 	}
 }

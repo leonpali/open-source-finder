@@ -4,6 +4,8 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -18,75 +20,95 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.List;
 import java.util.Optional;
 
+import com.opensourcefinder.github.GitHubException;
+import com.opensourcefinder.model.Issue;
+import com.opensourcefinder.model.Repository;
 import com.opensourcefinder.service.ReadmeService;
 import com.opensourcefinder.service.RepositoryService;
+import com.opensourcefinder.service.TechnologyCatalog;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * Uses the real {@link RepositoryService} (its sample data is fixed) and mocks {@link ReadmeService}, which would
- * otherwise call the GitHub API.
+ * Both services are mocked, so these tests never call the GitHub API.
  */
 @WebMvcTest(HomeController.class)
-@Import(RepositoryService.class)
 class HomeControllerTests {
 
-	static final int TOTAL_REPOSITORIES = 12;
+	static final Repository FLASK = new Repository("pallets", "flask", "The Python micro framework.",
+			"https://github.com/pallets/flask", List.of("Python", "Flask"), 70000);
+
+	static final Repository RUSTLINGS = new Repository("rust-lang", "rustlings", "Small exercises.",
+			"https://github.com/rust-lang/rustlings", List.of("Rust"), 61000);
+
+	static final Issue ISSUE = new Issue(42, "Add type hints", "<p>Some <code>helpers</code> lack hints.</p>",
+			"https://github.com/pallets/flask/issues/42", List.of("good first issue", "typing"), 3, "octocat");
+
+	static final GitHubException RATE_LIMITED = new GitHubException("The GitHub API rate limit was reached.", null);
 
 	@Autowired
 	MockMvc mvc;
 
-	@Autowired
+	@MockitoBean
 	RepositoryService repositories;
 
 	@MockitoBean
 	ReadmeService readmes;
 
+	@BeforeEach
+	void knownRepositories() {
+		given(repositories.find(anyString(), anyString())).willReturn(Optional.empty());
+		given(repositories.find("pallets", "flask")).willReturn(Optional.of(FLASK));
+		given(repositories.find("rust-lang", "rustlings")).willReturn(Optional.of(RUSTLINGS));
+		given(repositories.findPopular(anyList())).willReturn(List.of(FLASK, RUSTLINGS));
+	}
+
 	@Nested
 	class Index {
 
 		@Test
-		void rendersAllRepositoriesWithoutFilter() throws Exception {
+		void rendersPopularRepositoriesWithoutFilter() throws Exception {
 			mvc.perform(get("/"))
 					.andExpect(status().isOk())
 					.andExpect(view().name("index"))
-					.andExpect(model().attribute("repositories", hasSize(TOTAL_REPOSITORIES)))
+					.andExpect(model().attribute("repositories", hasSize(2)))
 					.andExpect(model().attribute("filter", new FilterState(List.of())))
-					.andExpect(model().attributeDoesNotExist("selectedRepo"))
-					.andExpect(content().string(containsString("spring-boot")))
+					.andExpect(model().attribute("technologyOptions", TechnologyCatalog.names()))
+					.andExpect(model().attributeDoesNotExist("selectedRepo", "error"))
+					.andExpect(content().string(containsString("rustlings")))
 					.andExpect(content().string(containsString("Nothing selected yet")))
 					.andExpect(content().string(not(containsString("class=\"chip\""))));
+
+			verify(repositories).findPopular(List.of());
 		}
 
 		@Test
-		void filtersByTechnologyIgnoringCase() throws Exception {
-			mvc.perform(get("/").param("tech", "go"))
-					.andExpect(status().isOk())
-					.andExpect(model().attribute("filter", new FilterState(List.of("Go"))))
-					.andExpect(model().attribute("repositories", hasSize(3)))
-					.andExpect(content().string(containsString("3 of 12")))
-					.andExpect(content().string(containsString("kubectl")))
-					.andExpect(content().string(not(containsString("rustlings"))));
+		void passesNormalizedTechnologiesToTheService() throws Exception {
+			mvc.perform(get("/").param("tech", "go", "Golang", "spring-boot", " ", ""))
+					.andExpect(model().attribute("filter", new FilterState(List.of("Go", "Spring Boot"))));
+
+			verify(repositories).findPopular(List.of("Go", "Spring Boot"));
 		}
 
 		@Test
-		void showsRepositoriesMatchingAnySelectedTechnology() throws Exception {
-			mvc.perform(get("/").param("tech", "Go", "Rust"))
-					.andExpect(model().attribute("repositories", hasSize(5)))
-					.andExpect(content().string(containsString("rustlings")))
-					.andExpect(content().string(containsString("compose")));
+		void keepsUnknownTechnologiesAsTyped() throws Exception {
+			mvc.perform(get("/").param("tech", "Zig"))
+					.andExpect(model().attribute("filter", new FilterState(List.of("Zig"))));
+
+			verify(repositories).findPopular(List.of("Zig"));
 		}
 
 		@Test
-		void dropsDuplicateAndBlankTechnologies() throws Exception {
-			mvc.perform(get("/").param("tech", "Java", "java", " ", ""))
-					.andExpect(model().attribute("filter", new FilterState(List.of("Java"))));
+		void highlightsTagsOfSelectedTechnologies() throws Exception {
+			mvc.perform(get("/").param("tech", "rust"))
+					.andExpect(content().string(containsString("<span class=\"tag is-match\">Rust</span>")))
+					.andExpect(content().string(containsString("<span class=\"tag\">Python</span>")));
 		}
 
 		@Test
@@ -98,11 +120,31 @@ class HomeControllerTests {
 		}
 
 		@Test
+		void linksCardsToTheirDetailView() throws Exception {
+			mvc.perform(get("/").param("tech", "Python"))
+					.andExpect(content().string(containsString("href=\"/?tech=Python&amp;repo=pallets/flask\"")))
+					.andExpect(content().string(containsString("hx-get=\"/repos/pallets/flask?tech=Python\"")));
+		}
+
+		@Test
 		void showsEmptyStateWhenNothingMatches() throws Exception {
+			given(repositories.findPopular(anyList())).willReturn(List.of());
+
 			mvc.perform(get("/").param("tech", "Elixir"))
 					.andExpect(model().attribute("repositories", hasSize(0)))
-					.andExpect(content().string(containsString("No repositories match")))
-					.andExpect(content().string(containsString("0 of 12")));
+					.andExpect(content().string(containsString("No repositories match")));
+		}
+
+		@Test
+		void showsErrorBannerWhenGitHubFails() throws Exception {
+			given(repositories.findPopular(anyList())).willThrow(RATE_LIMITED);
+
+			mvc.perform(get("/"))
+					.andExpect(status().isOk())
+					.andExpect(model().attribute("repositories", hasSize(0)))
+					.andExpect(model().attribute("error", RATE_LIMITED.getMessage()))
+					.andExpect(content().string(containsString("Couldn't load repositories from GitHub")))
+					.andExpect(content().string(not(containsString("No repositories match"))));
 		}
 
 		@Test
@@ -110,6 +152,8 @@ class HomeControllerTests {
 			mvc.perform(get("/").param("tech", "Go").param("q", "pyt"))
 					.andExpect(status().is3xxRedirection())
 					.andExpect(redirectedUrl("/?tech=Go&tech=Python"));
+
+			verify(repositories, never()).findPopular(anyList());
 		}
 
 		@Test
@@ -122,8 +166,8 @@ class HomeControllerTests {
 
 		@Test
 		void keepsUnknownQueryAsTyped() throws Exception {
-			mvc.perform(get("/").param("q", " Elixir ").header("HX-Request", "true"))
-					.andExpect(header().string("HX-Push-Url", "/?tech=Elixir"));
+			mvc.perform(get("/").param("q", " Zig ").header("HX-Request", "true"))
+					.andExpect(header().string("HX-Push-Url", "/?tech=Zig"));
 		}
 
 		@Test
@@ -135,7 +179,7 @@ class HomeControllerTests {
 		@Test
 		void opensDetailDialogForRepoParameter() throws Exception {
 			mvc.perform(get("/").param("repo", "pallets/flask"))
-					.andExpect(model().attribute("selectedRepo", repositories.find("pallets", "flask").orElseThrow()))
+					.andExpect(model().attribute("selectedRepo", FLASK))
 					.andExpect(content().string(containsString("open=\"open\"")))
 					.andExpect(content().string(containsString("data-repo=\"pallets/flask\"")));
 		}
@@ -147,6 +191,16 @@ class HomeControllerTests {
 					.andExpect(model().attributeDoesNotExist("selectedRepo"));
 			mvc.perform(get("/").param("repo", "flask"))
 					.andExpect(status().isOk())
+					.andExpect(model().attributeDoesNotExist("selectedRepo"));
+		}
+
+		@Test
+		void stillRendersListWhenRepoLookupFails() throws Exception {
+			given(repositories.find("pallets", "flask")).willThrow(RATE_LIMITED);
+
+			mvc.perform(get("/").param("repo", "pallets/flask"))
+					.andExpect(status().isOk())
+					.andExpect(model().attribute("repositories", hasSize(2)))
 					.andExpect(model().attributeDoesNotExist("selectedRepo"));
 		}
 	}
@@ -173,16 +227,16 @@ class HomeControllerTests {
 
 		@Test
 		void offersToAddUnknownTechnology() throws Exception {
-			mvc.perform(get("/technologies").param("q", "Elixir"))
+			mvc.perform(get("/technologies").param("q", "Zig"))
 					.andExpect(model().attribute("technologyOptions", hasSize(0)))
 					.andExpect(content().string(containsString("Press Enter to add")))
-					.andExpect(content().string(containsString("Elixir")));
+					.andExpect(content().string(containsString("Zig")));
 		}
 
 		@Test
-		void listsEverythingForEmptyQuery() throws Exception {
+		void listsTheWholeCatalogForEmptyQuery() throws Exception {
 			mvc.perform(get("/technologies"))
-					.andExpect(model().attribute("technologyOptions", hasSize(18)))
+					.andExpect(model().attribute("technologyOptions", TechnologyCatalog.names()))
 					.andExpect(content().string(not(containsString("Press Enter to add"))));
 		}
 	}
@@ -191,15 +245,15 @@ class HomeControllerTests {
 	class Detail {
 
 		@Test
-		void returnsDialogFragmentForRepository() throws Exception {
+		void returnsDialogFragmentThatLoadsReadmeAndIssue() throws Exception {
 			mvc.perform(get("/repos/rust-lang/rustlings").param("tech", "Rust"))
 					.andExpect(status().isOk())
 					.andExpect(view().name("index :: detail"))
 					.andExpect(content().string(not(containsString("<html"))))
 					.andExpect(content().string(containsString("data-repo=\"rust-lang/rustlings\"")))
-					.andExpect(content().string(containsString("Add hint for the iterators exercise")))
 					.andExpect(content().string(containsString("href=\"https://github.com/rust-lang/rustlings\"")))
-					.andExpect(content().string(containsString("hx-get=\"/repos/rust-lang/rustlings/readme\"")));
+					.andExpect(content().string(containsString("hx-get=\"/repos/rust-lang/rustlings/readme\"")))
+					.andExpect(content().string(containsString("hx-get=\"/repos/rust-lang/rustlings/issue\"")));
 		}
 
 		@Test
@@ -209,16 +263,19 @@ class HomeControllerTests {
 		}
 
 		@Test
-		void findsRepositoryIgnoringCase() throws Exception {
-			mvc.perform(get("/repos/Pallets/Flask"))
-					.andExpect(status().isOk())
-					.andExpect(content().string(containsString("data-repo=\"pallets/flask\"")));
-		}
-
-		@Test
 		void returns404ForUnknownRepository() throws Exception {
 			mvc.perform(get("/repos/nobody/nothing"))
 					.andExpect(status().isNotFound());
+		}
+
+		@Test
+		void showsErrorInDialogWhenGitHubFails() throws Exception {
+			given(repositories.find("pallets", "flask")).willThrow(RATE_LIMITED);
+
+			mvc.perform(get("/repos/pallets/flask"))
+					.andExpect(status().isOk())
+					.andExpect(content().string(containsString("data-repo=\"pallets/flask\"")))
+					.andExpect(content().string(containsString(RATE_LIMITED.getMessage())));
 		}
 	}
 
@@ -227,7 +284,7 @@ class HomeControllerTests {
 
 		@Test
 		void rendersReadmeHtmlFromService() throws Exception {
-			given(readmes.findReadmeHtml(any())).willReturn(Optional.of("<h1>Flask</h1><p>Hello</p>"));
+			given(readmes.findReadmeHtml(FLASK)).willReturn(Optional.of("<h1>Flask</h1><p>Hello</p>"));
 
 			mvc.perform(get("/repos/pallets/flask/readme"))
 					.andExpect(status().isOk())
@@ -238,7 +295,7 @@ class HomeControllerTests {
 
 		@Test
 		void linksToGitHubWhenReadmeIsUnavailable() throws Exception {
-			given(readmes.findReadmeHtml(any())).willReturn(Optional.empty());
+			given(readmes.findReadmeHtml(FLASK)).willReturn(Optional.empty());
 
 			mvc.perform(get("/repos/pallets/flask/readme"))
 					.andExpect(status().isOk())
@@ -247,11 +304,61 @@ class HomeControllerTests {
 		}
 
 		@Test
-		void returns404ForUnknownRepositoryWithoutCallingGitHub() throws Exception {
+		void fallsBackForUnknownRepositoryWithoutFetchingReadme() throws Exception {
 			mvc.perform(get("/repos/nobody/nothing/readme"))
-					.andExpect(status().isNotFound());
+					.andExpect(status().isOk())
+					.andExpect(content().string(containsString("README could not be loaded")));
 
 			verify(readmes, never()).findReadmeHtml(any());
+		}
+
+		@Test
+		void fallsBackWhenRepoLookupFails() throws Exception {
+			given(repositories.find("pallets", "flask")).willThrow(RATE_LIMITED);
+
+			mvc.perform(get("/repos/pallets/flask/readme"))
+					.andExpect(status().isOk())
+					.andExpect(content().string(containsString("README could not be loaded")));
+		}
+	}
+
+	@Nested
+	class GoodFirstIssue {
+
+		@Test
+		void rendersIssueFromService() throws Exception {
+			given(repositories.findGoodFirstIssue(FLASK)).willReturn(Optional.of(ISSUE));
+
+			mvc.perform(get("/repos/pallets/flask/issue"))
+					.andExpect(status().isOk())
+					.andExpect(view().name("index :: issue"))
+					.andExpect(content().string(not(containsString("<html"))))
+					.andExpect(content().string(containsString("Add type hints")))
+					.andExpect(content().string(containsString("#42")))
+					.andExpect(content().string(containsString("<strong>octocat</strong>")))
+					.andExpect(content().string(containsString("3 comments")))
+					.andExpect(content().string(containsString("<span class=\"tag\">typing</span>")))
+					.andExpect(content().string(containsString("<p>Some <code>helpers</code> lack hints.</p>")))
+					.andExpect(content().string(containsString("href=\"https://github.com/pallets/flask/issues/42\"")));
+		}
+
+		@Test
+		void saysSoWhenThereIsNoGoodFirstIssue() throws Exception {
+			given(repositories.findGoodFirstIssue(FLASK)).willReturn(Optional.empty());
+
+			mvc.perform(get("/repos/pallets/flask/issue"))
+					.andExpect(status().isOk())
+					.andExpect(content().string(containsString("No open good first issue found")))
+					.andExpect(content().string(containsString("href=\"https://github.com/pallets/flask/issues\"")));
+		}
+
+		@Test
+		void showsGitHubErrorMessage() throws Exception {
+			given(repositories.findGoodFirstIssue(FLASK)).willThrow(RATE_LIMITED);
+
+			mvc.perform(get("/repos/pallets/flask/issue"))
+					.andExpect(status().isOk())
+					.andExpect(content().string(containsString(RATE_LIMITED.getMessage())));
 		}
 	}
 }

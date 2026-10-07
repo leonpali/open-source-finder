@@ -60,11 +60,15 @@
 <div class="layout" id="layout">
 	<div class="list-toolbar">
 		<h2 class="section-title">Repositories</h2>
-		<span class="result-count"
-			  th:text="${filter.isEmpty()} ? ${totalCount} : |${#lists.size(repositories)} of ${totalCount}|">12</span>
+		<span class="result-count" th:text="${#lists.size(repositories)}">30</span>
 	</div>
 
 	<main class="content">
+		<div class="error-banner" role="alert" th:if="${error}">
+			<strong>Couldn't load repositories from GitHub.</strong>
+			<span th:text="${error}">The GitHub API rate limit was reached.</span>
+		</div>
+
 		<ul class="repo-list" th:unless="${#lists.isEmpty(repositories)}">
 			<li th:each="repo : ${repositories}">
 				<a class="repo-card" th:href="@{${filter.repoUrl(repo)}}"
@@ -81,7 +85,7 @@
 			</li>
 		</ul>
 
-		<div class="empty-state" th:if="${#lists.isEmpty(repositories)}"
+		<div class="empty-state" th:if="${#lists.isEmpty(repositories) and error == null}"
 			 hx-boost="true" hx-target="#layout" hx-select="#layout" hx-select-oob="#tech-state" hx-swap="outerHTML">
 			<p>No repositories match the selected technologies.</p>
 			<a class="btn" th:href="@{${filter.clearUrl()}}">Clear filters</a>
@@ -109,7 +113,21 @@
 <!-- Detail view: filled server-side when the URL has ?repo=, otherwise loaded by clicking a card. -->
 <dialog class="detail" id="detail" aria-labelledby="detail-title" th:open="${selectedRepo != null}">
 	<div id="detail-content" th:fragment="detail"
-		 th:data-close-url="@{${filter.url()}}" th:data-repo="${selectedRepo?.fullName()}">
+		 th:data-close-url="@{${filter.url()}}"
+		 th:data-repo="${selectedRepo != null} ? ${selectedRepo.fullName()} : ${detailRepo}">
+		<div class="detail-inner" th:if="${detailError}">
+			<header class="detail-header">
+				<div class="detail-heading">
+					<h2 id="detail-title" th:text="${detailRepo}">owner/name</h2>
+					<p class="detail-description" th:text="${detailError}">Error</p>
+				</div>
+				<div class="detail-actions">
+					<form method="dialog">
+						<button class="icon-button" aria-label="Close">×</button>
+					</form>
+				</div>
+			</header>
+		</div>
 		<div class="detail-inner" th:if="${selectedRepo}" th:with="repo=${selectedRepo}">
 			<header class="detail-header">
 				<div class="detail-heading">
@@ -141,18 +159,14 @@
 
 			<section class="detail-section">
 				<div class="issue-header">
-					<h3 class="detail-section-title">Issue</h3>
-					<a class="btn" th:href="${repo.issue.url}" target="_blank" rel="noopener">Open issue ↗</a>
+					<h3 class="detail-section-title">Good first issue</h3>
+					<a class="link-button" th:href="${repo.goodFirstIssuesUrl()}" target="_blank" rel="noopener">
+						All good first issues ↗</a>
 				</div>
-				<article class="issue">
-					<h4 class="issue-title"
-						th:text="${repo.issue.number > 0} ? |${repo.issue.title} #${repo.issue.number}| : ${repo.issue.title}">
-						Issue title</h4>
-					<div class="tag-row">
-						<span th:each="label : ${repo.issue.labels}" class="tag" th:text="${label}">label</span>
-					</div>
-					<p class="issue-body" th:text="${repo.issue.body ?: 'No description provided.'}">Body</p>
-				</article>
+				<div hx-trigger="load"
+					 th:hx-get="@{/repos/{owner}/{name}/issue(owner=${repo.owner}, name=${repo.name})}">
+					<p class="readme-status">Loading issue…</p>
+				</div>
 			</section>
 		</div>
 	</div>
@@ -164,7 +178,32 @@
 		<th:block th:if="${readmeHtml}" th:utext="${readmeHtml}"></th:block>
 		<p class="readme-status" th:unless="${readmeHtml}">
 			README could not be loaded.
-			<a th:href="${selectedRepo.url + '#readme'}" target="_blank" rel="noopener">View it on GitHub ↗</a>
+			<a th:href="${githubUrl + '#readme'}" target="_blank" rel="noopener">View it on GitHub ↗</a>
+		</p>
+	</th:block>
+
+	<th:block th:fragment="issue">
+		<article class="issue" th:if="${issue}">
+			<div class="issue-title-row">
+				<h4 class="issue-title">
+					<span th:text="${issue.title}">Issue title</span>
+					<span class="issue-number" th:text="|#${issue.number}|">#1</span>
+				</h4>
+				<a class="btn btn-primary" th:href="${issue.url}" target="_blank" rel="noopener">Open issue ↗</a>
+			</div>
+			<p class="issue-meta">
+				<th:block th:if="${issue.author}">Opened by <strong th:text="${issue.author}">octocat</strong> · </th:block>
+				<span th:text="${issue.comments == 1} ? '1 comment' : |${issue.comments} comments|">0 comments</span>
+			</p>
+			<div class="tag-row">
+				<span th:each="label : ${issue.labels}" class="tag" th:text="${label}">label</span>
+			</div>
+			<div class="issue-body markdown" th:if="${!#strings.isEmpty(issue.bodyHtml)}" th:utext="${issue.bodyHtml}"></div>
+			<p class="issue-body readme-status" th:if="${#strings.isEmpty(issue.bodyHtml)}">No description provided.</p>
+		</article>
+		<p class="readme-status" th:unless="${issue}">
+			<th:block th:text="${issueError ?: 'No open good first issue found right now.'}">No issue.</th:block>
+			<a th:href="${githubUrl + '/issues'}" target="_blank" rel="noopener">Browse issues on GitHub ↗</a>
 		</p>
 	</th:block>
 </th:block>

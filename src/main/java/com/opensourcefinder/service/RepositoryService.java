@@ -1,137 +1,160 @@
 package com.opensourcefinder.service;
 
+import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
-import java.util.SortedSet;
-import java.util.TreeSet;
+import java.util.regex.Pattern;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.opensourcefinder.github.GitHubClient;
+import com.opensourcefinder.github.GitHubException;
+import com.opensourcefinder.github.GitHubIssue;
+import com.opensourcefinder.github.GitHubRepository;
 import com.opensourcefinder.model.Issue;
 import com.opensourcefinder.model.Repository;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+/**
+ * Popular repositories with open "good first issue" issues, from the GitHub API. Results are cached to stay within
+ * GitHub's rate limits; failed requests throw {@link GitHubException} and are retried on the next call.
+ */
 @Service
 public class RepositoryService {
 
-	// Placeholder data until the GitHub integration exists.
-	private static final List<Repository> SAMPLE_REPOSITORIES = List.of(
-			repo("spring-projects", "spring-boot", "Spring Boot helps you to create Spring-powered, production-grade applications and services with absolute minimum fuss.",
-					List.of("Java", "Spring", "Gradle"), 79000,
-					"Improve documentation for configuration property binding",
-					"The reference docs for `@ConfigurationProperties` could use a clearer example of binding to immutable records.\n\nA short section showing constructor binding with records would help newcomers."),
-			repo("thymeleaf", "thymeleaf", "Thymeleaf is a modern server-side Java template engine for both web and standalone environments.",
-					List.of("Java", "HTML", "Maven"), 2900,
-					"Add test coverage for fragment expressions with parameters",
-					"Fragment expressions that take parameters are under-tested. Add unit tests covering default values and nested fragments."),
-			repo("facebook", "react", "The library for web and native user interfaces.",
-					List.of("JavaScript", "TypeScript", "React"), 240000,
-					"Clarify warning message for missing keys in lists",
-					"The warning shown when list children are missing a `key` prop could point users to the relevant docs page."),
-			repo("rust-lang", "rustlings", "Small exercises to get you used to reading and writing Rust code!",
-					List.of("Rust"), 61000,
-					"Add hint for the iterators exercise",
-					"Several users get stuck on the iterators exercise. A more descriptive hint would make it easier to progress."),
-			repo("pallets", "flask", "The Python micro framework for building web applications.",
-					List.of("Python", "HTML"), 70000,
-					"Type hints missing on a few helper functions",
-					"Some helper functions are missing return type annotations. Add them and make sure mypy still passes."),
-			repo("golang", "go", "The Go programming language.",
-					List.of("Go", "Assembly"), 128000,
-					"cmd/go: improve error message for invalid module path",
-					"When a module path is invalid the error message is terse. It should explain which part of the path is the problem."),
-			repo("vuejs", "core", "Vue.js is a progressive, incrementally-adoptable JavaScript framework for building UI on the web.",
-					List.of("TypeScript", "Vue", "JavaScript"), 50000,
-					"Docs: example for defineModel with modifiers",
-					"Add an example to the API docs showing how to use `defineModel` together with custom modifiers."),
-			repo("kubernetes", "kubectl", "Issue tracker and mirror of kubectl code.",
-					List.of("Go", "Kubernetes", "Docker"), 3000,
-					"Add shell completion for a missing flag",
-					"The `--selector` flag does not offer shell completion for label keys. Implement completion support."),
-			repo("microsoft", "vscode", "Visual Studio Code.",
-					List.of("TypeScript", "Electron", "CSS"), 175000,
-					"Accessibility: missing aria-label on a toolbar button",
-					"A toolbar button in the source control view is missing an `aria-label`, so screen readers announce it as \"button\"."),
-			repo("tailwindlabs", "tailwindcss", "A utility-first CSS framework for rapid UI development.",
-					List.of("CSS", "TypeScript", "Rust"), 88000,
-					"Improve error message for unknown theme keys",
-					"Referencing an unknown key in `theme()` produces an unhelpful error. Include the key name and suggestions."),
-			repo("django", "django", "The Web framework for perfectionists with deadlines.",
-					List.of("Python", "PostgreSQL", "HTML"), 84000,
-					"Add missing translation strings in admin",
-					"A few strings in the admin changelist view are not wrapped for translation. Wrap them with gettext."),
-			repo("docker", "compose", "Define and run multi-container applications with Docker.",
-					List.of("Go", "Docker"), 35000,
-					"Improve validation error for invalid port mappings",
-					"Invalid port mappings in compose files produce a generic error. Point to the offending service and line."));
+	static final String GOOD_FIRST_ISSUE = "good first issue";
 
-	public List<Repository> findAll() {
-		return SAMPLE_REPOSITORIES;
+	static final int MAX_TECHNOLOGIES = 5;
+
+	// Topics that say nothing about the technology used.
+	private static final Pattern NOISE_TOPICS = Pattern.compile(
+			"hacktoberfest.*|good-?first-?issues?|first-?timers?(-only)?|beginner-?friendly|up-for-grabs|help-?wanted"
+					+ "|open-?source|awesome(-list)?|hacktoberfest\\d+");
+
+	private final GitHubClient github;
+	private final String baseQuery;
+	private final int pageSize;
+
+	private final Cache<String, List<Repository>> searches = Caffeine.newBuilder()
+			.expireAfterWrite(Duration.ofMinutes(15))
+			.maximumSize(200)
+			.build();
+
+	private final Cache<String, Optional<Repository>> repositories = Caffeine.newBuilder()
+			.expireAfterWrite(Duration.ofHours(1))
+			.maximumSize(2000)
+			.build();
+
+	private final Cache<String, Optional<Issue>> issues = Caffeine.newBuilder()
+			.expireAfterWrite(Duration.ofMinutes(15))
+			.maximumSize(500)
+			.build();
+
+	public RepositoryService(GitHubClient github, @Value("${github.min-stars:1000}") int minStars,
+			@Value("${github.page-size:30}") int pageSize) {
+		this.github = github;
+		this.baseQuery = "good-first-issues:>0 archived:false stars:>=" + minStars;
+		this.pageSize = pageSize;
 	}
 
 	/**
-	 * Repositories using at least one of the given technologies, or all repositories when none are given.
+	 * The most-starred repositories with open good first issues that use at least one of the given technologies, or
+	 * regardless of technology when none are given.
 	 */
-	public List<Repository> findByTechnologies(Collection<String> technologies) {
+	public List<Repository> findPopular(List<String> technologies) {
 		if (technologies.isEmpty()) {
-			return SAMPLE_REPOSITORIES;
+			return search(baseQuery);
 		}
-		return SAMPLE_REPOSITORIES.stream()
-				.filter(repo -> repo.technologies().stream()
-						.anyMatch(tech -> technologies.stream().anyMatch(tech::equalsIgnoreCase)))
+		var byName = new LinkedHashMap<String, Repository>();
+		for (String tech : technologies) {
+			searchByTechnology(tech).forEach(repo -> byName.putIfAbsent(key(repo.owner(), repo.name()), repo));
+		}
+		return byName.values().stream()
+				.sorted(Comparator.comparingInt(Repository::stars).reversed())
 				.toList();
 	}
 
 	public Optional<Repository> find(String owner, String name) {
-		return SAMPLE_REPOSITORIES.stream()
-				.filter(repo -> repo.owner().equalsIgnoreCase(owner) && repo.name().equalsIgnoreCase(name))
-				.findFirst();
+		return repositories.get(key(owner, name), k -> github.getRepository(owner, name).map(RepositoryService::toRepository));
 	}
 
-	public SortedSet<String> availableTechnologies() {
-		var technologies = new TreeSet<String>(String.CASE_INSENSITIVE_ORDER);
-		SAMPLE_REPOSITORIES.forEach(repo -> technologies.addAll(repo.technologies()));
-		return technologies;
+	/** The newest open good first issue, preferring ones nobody is assigned to. */
+	public Optional<Issue> findGoodFirstIssue(Repository repo) {
+		return issues.get(key(repo.owner(), repo.name()), k -> {
+			List<GitHubIssue> candidates = github.openIssuesWithLabel(repo.owner(), repo.name(), GOOD_FIRST_ISSUE, 20)
+					.stream()
+					.filter(issue -> !issue.isPullRequest())
+					.toList();
+			return candidates.stream()
+					.filter(issue -> !issue.isAssigned())
+					.findFirst()
+					.or(() -> candidates.stream().findFirst())
+					.map(issue -> toIssue(issue, repo));
+		});
 	}
 
-	public List<String> searchTechnologies(String query) {
-		String q = query == null ? "" : query.strip().toLowerCase();
-		return availableTechnologies().stream()
-				.filter(tech -> tech.toLowerCase().contains(q))
-				.toList();
+	private List<Repository> searchByTechnology(String tech) {
+		var known = TechnologyCatalog.lookup(tech);
+		if (known.isPresent()) {
+			return search(baseQuery + " " + known.get().qualifier());
+		}
+		// Unknown technology: try it as a language, then as a topic.
+		String cleaned = tech.replace("\"", "").strip();
+		List<Repository> byLanguage = search(baseQuery + " language:\"" + cleaned + "\"");
+		if (!byLanguage.isEmpty()) {
+			return byLanguage;
+		}
+		return search(baseQuery + " topic:" + cleaned.toLowerCase(Locale.ROOT).replaceAll("\\s+", "-"));
 	}
 
-	/**
-	 * Maps user input to the known spelling of a technology ("java" -> "Java"), dropping blanks and duplicates.
-	 * Unknown technologies are kept as typed.
-	 */
-	public List<String> normalizeTechnologies(Collection<String> input) {
-		var known = availableTechnologies();
-		var result = new ArrayList<String>();
-		for (String raw : input) {
-			String tech = raw.strip();
-			if (tech.isEmpty() || result.stream().anyMatch(tech::equalsIgnoreCase)) {
+	private List<Repository> search(String query) {
+		return searches.get(query, q -> {
+			List<Repository> found = github.searchRepositories(q, pageSize).stream()
+					.map(RepositoryService::toRepository)
+					.toList();
+			// Lets the detail view open without another request.
+			found.forEach(repo -> repositories.put(key(repo.owner(), repo.name()), Optional.of(repo)));
+			return found;
+		});
+	}
+
+	static Repository toRepository(GitHubRepository repo) {
+		return new Repository(repo.owner().login(), repo.name(), repo.description(), repo.htmlUrl(),
+				technologies(repo), repo.stars());
+	}
+
+	/** Primary language, then topics from the catalog, then other topics; capped at {@link #MAX_TECHNOLOGIES}. */
+	static List<String> technologies(GitHubRepository repo) {
+		var known = new ArrayList<String>();
+		var other = new ArrayList<String>();
+		if (repo.language() != null) {
+			known.add(TechnologyCatalog.displayName(repo.language()));
+		}
+		for (String topic : repo.topics() == null ? List.<String>of() : repo.topics()) {
+			if (NOISE_TOPICS.matcher(topic).matches()) {
 				continue;
 			}
-			result.add(known.contains(tech) ? known.tailSet(tech).first() : tech);
+			TechnologyCatalog.lookup(topic).ifPresentOrElse(tech -> known.add(tech.name()), () -> other.add(topic));
 		}
-		return result;
+		known.addAll(other);
+		return TechnologyCatalog.normalize(known).stream().limit(MAX_TECHNOLOGIES).toList();
 	}
 
-	/**
-	 * Resolves a search query typed into the picker: the first known technology containing it, else the query itself.
-	 */
-	public String resolveTechnology(String query) {
-		return searchTechnologies(query).stream().findFirst().orElse(query.strip());
+	private static Issue toIssue(GitHubIssue issue, Repository repo) {
+		String body = issue.bodyHtml() == null ? "" : HtmlSanitizer.sanitize(issue.bodyHtml(), repo);
+		List<String> labels = issue.labels() == null ? List.of()
+				: issue.labels().stream().map(GitHubIssue.Label::name).toList();
+		String author = issue.user() == null ? null : issue.user().login();
+		return new Issue(issue.number(), issue.title(), body, issue.htmlUrl(), labels, issue.comments(), author);
 	}
 
-	private static Repository repo(String owner, String name, String description, List<String> technologies,
-			int stars, String issueTitle, String issueBody) {
-		String url = "https://github.com/" + owner + "/" + name;
-		// Links to the repo's issue list until real issue numbers come from the GitHub API.
-		var issue = new Issue(0, issueTitle, issueBody, url + "/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22",
-				List.of("good first issue"), 0);
-		return new Repository(owner, name, description, url, technologies, stars, issue);
+	private static String key(String owner, String name) {
+		return (owner + "/" + name).toLowerCase(Locale.ROOT);
 	}
 }
