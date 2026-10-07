@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="htmx-config" content='{"scrollIntoViewOnBoost": false}'>
+	<title>Open Source Finder</title>
+	<link rel="stylesheet" th:href="@{/css/style.css}">
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.11/htmx.min.js" defer></script>
+	<script th:src="@{/js/app.js}" defer></script>
+</head>
+<body>
+
+<!--
+	How updates work: filter links and the picker form request the full page ("/?tech=...") and htmx swaps in just
+	#layout and #tech-state from the response. Cards and the README load their own fragments into the dialog.
+-->
+
+<header class="topbar">
+	<div class="brand">
+		<span class="brand-mark" aria-hidden="true">&lt;/&gt;</span>
+		<div>
+			<h1>Open Source Finder</h1>
+			<p class="tagline">Find repositories and issues to contribute to</p>
+		</div>
+	</div>
+
+	<details class="tech-picker" id="tech-picker">
+		<summary class="btn btn-primary"><span aria-hidden="true">+</span> Add technology</summary>
+
+		<div class="popover">
+			<input type="search" name="q" form="tech-form" class="input" id="tech-search"
+				   placeholder="Search or type a technology…" aria-label="Search technologies" autocomplete="off"
+				   th:hx-get="@{/technologies}" hx-trigger="input changed delay:150ms, search"
+				   hx-target="#tech-state" hx-swap="outerHTML" hx-include="#tech-state input[name='tech']">
+
+			<form id="tech-form" th:action="@{/}" method="get"
+				  th:hx-get="@{/}" hx-target="#layout" hx-select="#layout" hx-select-oob="#tech-state"
+				  hx-swap="outerHTML" hx-push-url="true">
+				<div id="tech-state" th:fragment="techState" hx-boost="true">
+					<input th:each="tech : ${filter.selected}" type="hidden" name="tech" th:value="${tech}">
+
+					<ul class="tech-options" aria-label="Technologies">
+						<li th:each="tech : ${technologyOptions}">
+							<a class="tech-option" th:href="@{${filter.toggleUrl(tech)}}"
+							   th:classappend="${filter.isSelected(tech)} ? 'is-selected'"
+							   th:aria-current="${filter.isSelected(tech)} ? 'true'"
+							   th:text="${tech}">Java</a>
+						</li>
+					</ul>
+					<p class="popover-empty" th:if="${#lists.isEmpty(technologyOptions) and !#strings.isEmpty(query)}">
+						Press Enter to add “<span th:text="${query}">Elixir</span>”
+					</p>
+				</div>
+			</form>
+		</div>
+	</details>
+</header>
+
+<div class="layout" id="layout">
+	<div class="list-toolbar">
+		<h2 class="section-title">Repositories</h2>
+		<span class="result-count"
+			  th:text="${filter.isEmpty()} ? ${totalCount} : |${#lists.size(repositories)} of ${totalCount}|">12</span>
+	</div>
+
+	<main class="content">
+		<ul class="repo-list" th:unless="${#lists.isEmpty(repositories)}">
+			<li th:each="repo : ${repositories}">
+				<a class="repo-card" th:href="@{${filter.repoUrl(repo)}}"
+				   th:hx-get="@{/repos/{owner}/{name}(owner=${repo.owner}, name=${repo.name}, tech=${filter.selected})}"
+				   hx-target="#detail-content" hx-swap="outerHTML"
+				   th:hx-push-url="@{${filter.repoUrl(repo)}}">
+					<span class="repo-owner" th:text="${repo.owner}">owner</span>
+					<span class="repo-name" th:text="${repo.name}">name</span>
+					<span class="tag-row">
+						<span th:each="tech : ${repo.technologies}" class="tag"
+							  th:classappend="${filter.isSelected(tech)} ? 'is-match'" th:text="${tech}">Java</span>
+					</span>
+				</a>
+			</li>
+		</ul>
+
+		<div class="empty-state" th:if="${#lists.isEmpty(repositories)}"
+			 hx-boost="true" hx-target="#layout" hx-select="#layout" hx-select-oob="#tech-state" hx-swap="outerHTML">
+			<p>No repositories match the selected technologies.</p>
+			<a class="btn" th:href="@{${filter.clearUrl()}}">Clear filters</a>
+		</div>
+	</main>
+
+	<aside class="sidebar" aria-labelledby="selected-title"
+		   hx-boost="true" hx-target="#layout" hx-select="#layout" hx-select-oob="#tech-state" hx-swap="outerHTML">
+		<div class="sidebar-header">
+			<h2 class="section-title" id="selected-title">Selected technologies</h2>
+			<a class="link-button" th:href="@{${filter.clearUrl()}}" th:unless="${filter.isEmpty()}">Clear all</a>
+		</div>
+		<ul class="chip-list" th:unless="${filter.isEmpty()}">
+			<li class="chip" th:each="tech : ${filter.selected}">
+				<span th:text="${tech}">Java</span>
+				<a class="chip-remove" th:href="@{${filter.toggleUrl(tech)}}" th:aria-label="|Remove ${tech}|">×</a>
+			</li>
+		</ul>
+		<p class="sidebar-hint" th:if="${filter.isEmpty()}">
+			Nothing selected yet. Use <strong>Add technology</strong> to filter the list.
+		</p>
+	</aside>
+</div>
+
+<!-- Detail view: filled server-side when the URL has ?repo=, otherwise loaded by clicking a card. -->
+<dialog class="detail" id="detail" aria-labelledby="detail-title" th:open="${selectedRepo != null}">
+	<div id="detail-content" th:fragment="detail"
+		 th:data-close-url="@{${filter.url()}}" th:data-repo="${selectedRepo?.fullName()}">
+		<div class="detail-inner" th:if="${selectedRepo}" th:with="repo=${selectedRepo}">
+			<header class="detail-header">
+				<div class="detail-heading">
+					<p class="repo-owner" th:text="${repo.owner}">owner</p>
+					<h2 id="detail-title" th:text="${repo.name}">name</h2>
+					<p class="detail-description" th:text="${repo.description}">Description</p>
+					<div class="detail-meta">
+						<span class="stars" th:text="|★ ${#numbers.formatInteger(repo.stars, 1, 'COMMA')}|">★ 1,000</span>
+						<span class="tag-row">
+							<span th:each="tech : ${repo.technologies}" class="tag" th:text="${tech}">Java</span>
+						</span>
+					</div>
+				</div>
+				<div class="detail-actions">
+					<a class="btn btn-primary" th:href="${repo.url}" target="_blank" rel="noopener">Open repository ↗</a>
+					<form method="dialog">
+						<button class="icon-button" aria-label="Close">×</button>
+					</form>
+				</div>
+			</header>
+
+			<section class="detail-section">
+				<h3 class="detail-section-title">README</h3>
+				<div class="readme" hx-trigger="load"
+					 th:hx-get="@{/repos/{owner}/{name}/readme(owner=${repo.owner}, name=${repo.name})}">
+					<p class="readme-status">Loading README…</p>
+				</div>
+			</section>
+
+			<section class="detail-section">
+				<div class="issue-header">
+					<h3 class="detail-section-title">Issue</h3>
+					<a class="btn" th:href="${repo.issue.url}" target="_blank" rel="noopener">Open issue ↗</a>
+				</div>
+				<article class="issue">
+					<h4 class="issue-title"
+						th:text="${repo.issue.number > 0} ? |${repo.issue.title} #${repo.issue.number}| : ${repo.issue.title}">
+						Issue title</h4>
+					<div class="tag-row">
+						<span th:each="label : ${repo.issue.labels}" class="tag" th:text="${label}">label</span>
+					</div>
+					<p class="issue-body" th:text="${repo.issue.body ?: 'No description provided.'}">Body</p>
+				</article>
+			</section>
+		</div>
+	</div>
+</dialog>
+
+<!-- Fragments that are only rendered on their own. -->
+<th:block th:if="${false}">
+	<th:block th:fragment="readme">
+		<th:block th:if="${readmeHtml}" th:utext="${readmeHtml}"></th:block>
+		<p class="readme-status" th:unless="${readmeHtml}">
+			README could not be loaded.
+			<a th:href="${selectedRepo.url + '#readme'}" target="_blank" rel="noopener">View it on GitHub ↗</a>
+		</p>
+	</th:block>
+</th:block>
+
+</body>
+</html>
